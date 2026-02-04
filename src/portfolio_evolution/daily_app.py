@@ -57,7 +57,9 @@ class DegiroMovementsPositionsLoader:
 
         # Fecha valor como referencia; si no existe, usamos Fecha
         date_col = "Fecha valor" if "Fecha valor" in df.columns else "Fecha"
-        df["date"] = pd.to_datetime(df[date_col], errors="coerce", dayfirst=True).dt.tz_localize(None)
+        df["date"] = pd.to_datetime(
+            df[date_col], errors="coerce", dayfirst=True
+        ).dt.tz_localize(None)
 
         # Necesitamos ISIN y Descripción
         if "ISIN" not in df.columns:
@@ -111,7 +113,9 @@ class DegiroMovementsPositionsLoader:
 
         trades_df = pd.DataFrame(trades, columns=["date", "isin", "qty_delta"])
         trades_df = (
-            trades_df.groupby(["date", "isin"], as_index=False)["qty_delta"].sum().sort_values("date")
+            trades_df.groupby(["date", "isin"], as_index=False)["qty_delta"]
+            .sum()
+            .sort_values("date")
         )
 
         all_dates = pd.date_range(
@@ -123,7 +127,9 @@ class DegiroMovementsPositionsLoader:
         isins = sorted(trades_df["isin"].unique())
         data = {}
         for isin in isins:
-            sub = trades_df.loc[trades_df["isin"] == isin, ["date", "qty_delta"]].set_index("date")
+            sub = trades_df.loc[
+                trades_df["isin"] == isin, ["date", "qty_delta"]
+            ].set_index("date")
             sub = sub.reindex(all_dates, fill_value=0.0)
             units = sub["qty_delta"].cumsum()
             data[isin] = units
@@ -132,7 +138,7 @@ class DegiroMovementsPositionsLoader:
         positions_df.index.name = "date"
 
         if not positions_df.empty:
-            mask_any = (positions_df.abs().sum(axis=1) != 0)
+            mask_any = positions_df.abs().sum(axis=1) != 0
             positions_df = positions_df.loc[mask_any]
 
         self.isin_to_name = isin_to_name
@@ -152,10 +158,14 @@ class DegiroMovementsCsvCashflowLoader:
 
         # Fecha valor como referencia; si no existe, usamos Fecha
         date_col = "Fecha valor" if "Fecha valor" in df.columns else "Fecha"
-        df["date"] = pd.to_datetime(df[date_col], errors="coerce", dayfirst=True).dt.tz_localize(None)
+        df["date"] = pd.to_datetime(
+            df[date_col], errors="coerce", dayfirst=True
+        ).dt.tz_localize(None)
 
         if "Variación" not in df.columns:
-            raise ValueError(f"No encuentro columna 'Variación' en Movements.csv. Columnas: {list(df.columns)}")
+            raise ValueError(
+                f"No encuentro columna 'Variación' en Movements.csv. Columnas: {list(df.columns)}"
+            )
 
         var_idx = df.columns.get_loc("Variación")
         if var_idx + 1 >= len(df.columns):
@@ -182,7 +192,9 @@ class DegiroMovementsCsvCashflowLoader:
         is_deposit = d.str.contains(r"flatex deposit")
         is_transfer_in = d.str.contains(r"transferir desde su cuenta de efectivo")
         is_transfer_out = d.str.contains(r"transferir a su cuenta de efectivo")
-        is_withdraw_other = d.str.contains(r"withdraw|reembolso|transfer out|auszahlung|uitboeking")
+        is_withdraw_other = d.str.contains(
+            r"withdraw|reembolso|transfer out|auszahlung|uitboeking"
+        )
         is_fx = d.str.contains(r"cambio de divisa")
         is_withdraw = (is_transfer_out | is_withdraw_other) & (~is_fx)
         is_cash_sweep = d.str.contains(r"cash sweep")
@@ -192,10 +204,17 @@ class DegiroMovementsCsvCashflowLoader:
         is_connectivity_fee = d.str.contains(r"comisión de conectividad con el mercado")
         is_commission = is_trade_cost | is_connectivity_fee
 
-        external = (is_deposit | is_transfer_in | is_withdraw | is_commission) & (~is_cash_sweep)
+        external = (is_deposit | is_transfer_in | is_withdraw | is_commission) & (
+            ~is_cash_sweep
+        )
 
         out = df.loc[external, ["date", "amount"]].dropna().copy()
-        out = out.groupby("date", as_index=False)["amount"].sum().sort_values("date").reset_index(drop=True)
+        out = (
+            out.groupby("date", as_index=False)["amount"]
+            .sum()
+            .sort_values("date")
+            .reset_index(drop=True)
+        )
         return out
 
 
@@ -215,8 +234,7 @@ def get_daily_prices_yahoo(
     missing = [i for i in isins if not isin_to_ticker.get(i)]
     if missing:
         raise ValueError(
-            "Faltan tickers para algunos ISIN: "
-            + ", ".join(sorted(missing))
+            "Faltan tickers para algunos ISIN: " + ", ".join(sorted(missing))
         )
 
     tickers = [isin_to_ticker[i] for i in isins]
@@ -224,7 +242,10 @@ def get_daily_prices_yahoo(
     data = yf.download(
         tickers,
         start=start,
-        end=end + timedelta(days=1),  # yfinance usa end exclusivo; sumamos 1 día para incluir 'end'
+        end=end
+        + timedelta(
+            days=1
+        ),  # yfinance usa end exclusivo; sumamos 1 día para incluir 'end'
         interval="1d",
         auto_adjust=False,
         progress=False,
@@ -280,15 +301,13 @@ def main() -> None:
     st.set_page_config(page_title="DEGIRO – Evolución diaria", layout="wide")
     st.title("DEGIRO → Evolución diaria de la cartera")
 
-    st.markdown(
-        """
+    st.markdown("""
 Subí tu archivo **Movements.csv** de DEGIRO y te muestro un único gráfico con la
 **evolución diaria estimada del valor total de tu cartera**, usando:
 
 - posiciones diarias por ISIN reconstruidas desde Movements.csv
 - precios diarios de Yahoo Finance (tickers sugeridos automáticamente por ISIN)
-"""
-    )
+""")
 
     movements_file = st.file_uploader(
         "Subí el archivo Movements.csv (export de DEGIRO, locale ES)",
@@ -330,9 +349,13 @@ Subí tu archivo **Movements.csv** de DEGIRO y te muestro un único gráfico con
 
     c1, c2 = st.columns(2)
     with c1:
-        start = st.date_input("Desde", pos_min_d, min_value=pos_min_d, max_value=pos_max_d)
+        start = st.date_input(
+            "Desde", pos_min_d, min_value=pos_min_d, max_value=pos_max_d
+        )
     with c2:
-        end = st.date_input("Hasta", pos_max_d, min_value=pos_min_d, max_value=date.today())
+        end = st.date_input(
+            "Hasta", pos_max_d, min_value=pos_min_d, max_value=date.today()
+        )
 
     mask_pos = (positions_df.index.date >= start) & (positions_df.index.date <= end)
     positions_window = positions_df.loc[mask_pos]
@@ -346,7 +369,9 @@ Subí tu archivo **Movements.csv** de DEGIRO y te muestro un único gráfico con
     positions_window = positions_window.reindex(all_dates).ffill()
     positions_window.index.name = "date"
 
-    isins_in_positions = [c for c in positions_window.columns if positions_window[c].abs().sum() > 0]
+    isins_in_positions = [
+        c for c in positions_window.columns if positions_window[c].abs().sum() > 0
+    ]
 
     st.markdown("#### Mapping ISIN → ticker (elegí qué ticker usar en Yahoo Finance)")
 
@@ -395,7 +420,9 @@ Subí tu archivo **Movements.csv** de DEGIRO y te muestro un único gráfico con
         )
 
     if not isin_to_ticker:
-        st.warning("Completá al menos un 'Ticker elegido' para poder descargar precios diarios.")
+        st.warning(
+            "Completá al menos un 'Ticker elegido' para poder descargar precios diarios."
+        )
         return
 
     try:
@@ -410,7 +437,9 @@ Subí tu archivo **Movements.csv** de DEGIRO y te muestro un único gráfico con
         return
 
     if prices_df.empty:
-        st.warning("No se obtuvieron precios diarios (revisá los tickers elegidos o la conexión de red).")
+        st.warning(
+            "No se obtuvieron precios diarios (revisá los tickers elegidos o la conexión de red)."
+        )
         return
 
     # Alineamos precios al calendario de posiciones y rellenamos huecos con forward-fill
@@ -435,7 +464,8 @@ Subí tu archivo **Movements.csv** de DEGIRO y te muestro un único gráfico con
     daily_cf = None
     if cashflow_df is not None and not cashflow_df.empty:
         cf_window = cashflow_df[
-            (cashflow_df["date"].dt.date >= start) & (cashflow_df["date"].dt.date <= end)
+            (cashflow_df["date"].dt.date >= start)
+            & (cashflow_df["date"].dt.date <= end)
         ].copy()
         if not cf_window.empty:
             net_cashflows_range = float(cf_window["amount"].sum())
@@ -490,9 +520,8 @@ Subí tu archivo **Movements.csv** de DEGIRO y te muestro un único gráfico con
 
     # Precios diarios por ISIN
     st.markdown("#### Precios diarios por ISIN")
-    melted_prices = (
-        prices_aligned.reset_index()
-        .melt(id_vars="date", var_name="ISIN", value_name="price")
+    melted_prices = prices_aligned.reset_index().melt(
+        id_vars="date", var_name="ISIN", value_name="price"
     )
     fig_prices = px.line(
         melted_prices,
@@ -506,4 +535,3 @@ Subí tu archivo **Movements.csv** de DEGIRO y te muestro un único gráfico con
 
 if __name__ == "__main__":
     main()
-

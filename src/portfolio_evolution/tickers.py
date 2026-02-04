@@ -56,4 +56,3 @@ def best_ticker_suggestion(isin: str) -> str:
     symbol = suggestions[0].get("symbol", "") or ""
     print(f"[tickers.best_ticker_suggestion] {isin}: picked {symbol!r}")
     return symbol
-
