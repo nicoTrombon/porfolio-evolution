@@ -1,0 +1,5 @@
+# Optional development dependencies.
+
+ruff>=0.7.0
+black>=24.0.0
+

@@ -1,0 +1,12 @@
+# Runtime dependencies for portfolio-evolution.
+# uv + `pyproject.toml` are the source of truth; this file
+# is provided for tooling that expects a requirements.txt.
+
+streamlit>=1.40.0
+pandas>=2.1.0
+numpy>=1.26.0
+plotly>=5.0.0
+pdfplumber>=0.11.0
+yfinance>=0.2.50
+requests>=2.31.0
+
