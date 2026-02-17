@@ -189,24 +189,21 @@ class DegiroMovementsCsvCashflowLoader:
 
         d = df[desc_col].astype(str).str.lower()
 
+        # Dinero que entra o sale del bróker desde/hacia el “mundo exterior”
+        # Para el cálculo simple que queremos (valor total de la cuenta vs dinero aportado),
+        # consideramos SOLO:
+        #   - flatex Deposit  -> aportes positivos
+        #   - withdrawals explícitos (palabras tipo withdraw/reembolso/auszahlung/…)
+        # No contamos:
+        #   - transferencias internas con la cuenta de efectivo (cash sweep, transferir desde/a…)
+        #   - comisiones
         is_deposit = d.str.contains(r"flatex deposit")
-        is_transfer_in = d.str.contains(r"transferir desde su cuenta de efectivo")
-        is_transfer_out = d.str.contains(r"transferir a su cuenta de efectivo")
         is_withdraw_other = d.str.contains(
             r"withdraw|reembolso|transfer out|auszahlung|uitboeking"
         )
-        is_fx = d.str.contains(r"cambio de divisa")
-        is_withdraw = (is_transfer_out | is_withdraw_other) & (~is_fx)
         is_cash_sweep = d.str.contains(r"cash sweep")
 
-        # Comisiones y tasas (queremos que cuenten como cashflows negativos para el net gain)
-        is_trade_cost = d.str.contains(r"costes de transacción y/o externos de degiro")
-        is_connectivity_fee = d.str.contains(r"comisión de conectividad con el mercado")
-        is_commission = is_trade_cost | is_connectivity_fee
-
-        external = (is_deposit | is_transfer_in | is_withdraw | is_commission) & (
-            ~is_cash_sweep
-        )
+        external = (is_deposit | is_withdraw_other) & (~is_cash_sweep)
 
         out = df.loc[external, ["date", "amount"]].dropna().copy()
         out = (
@@ -216,6 +213,68 @@ class DegiroMovementsCsvCashflowLoader:
             .reset_index(drop=True)
         )
         return out
+
+
+class DegiroMovementsDailyCashLoader:
+    """
+    Reconstruye el saldo diario de efectivo en la divisa de la cuenta (EUR)
+    a partir de la columna 'Saldo' de Movements.csv.
+
+    Devuelve un DataFrame con índice fecha y una columna 'cash_eur'.
+    """
+
+    def load_daily_cash(self, csv_file) -> pd.DataFrame:
+        df = pd.read_csv(csv_file, sep=None, engine="python")
+        df.columns = [c.strip() for c in df.columns]
+
+        # Fecha valor como referencia; si no existe, usamos Fecha
+        date_col = "Fecha valor" if "Fecha valor" in df.columns else "Fecha"
+        df["date"] = pd.to_datetime(
+            df[date_col], errors="coerce", dayfirst=True
+        ).dt.tz_localize(None)
+
+        if "Saldo" not in df.columns:
+            raise ValueError("No encuentro columna 'Saldo' en Movements.csv.")
+
+        saldo_idx = df.columns.get_loc("Saldo")
+
+        # En los exports de DEGIRO (locale ES) la columna "Saldo" suele contener la
+        # divisa (p.ej. "EUR") y la columna adyacente el importe numérico.
+        currency_col = "Saldo"
+
+        neighbor_cols: List[str] = []
+        if saldo_idx + 1 < len(df.columns):
+            neighbor_cols.append(df.columns[saldo_idx + 1])
+        if saldo_idx - 1 >= 0:
+            neighbor_cols.append(df.columns[saldo_idx - 1])
+
+        if not neighbor_cols:
+            return pd.DataFrame()
+
+        def _numeric_score(series: pd.Series) -> float:
+            s = series.map(parse_euro_number)
+            return float(s.notna().mean())
+
+        # Elegimos como columna de importe la vecina que más se parece a números.
+        amount_col = max(neighbor_cols, key=lambda c: _numeric_score(df[c]))
+
+        df["saldo_amount"] = df[amount_col].map(parse_euro_number)
+        df["saldo_currency"] = df[currency_col].astype(str).str.strip().str.upper()
+
+        # Solo efectivo en EUR (divisa de la cuenta)
+        df_eur = df[(df["saldo_currency"] == "EUR") & df["saldo_amount"].notna()]
+        if df_eur.empty:
+            return pd.DataFrame()
+
+        df_eur = df_eur.sort_values("date")
+
+        daily = (
+            df_eur.groupby(df_eur["date"].dt.normalize())["saldo_amount"]
+            .last()
+            .to_frame(name="cash_eur")
+        )
+        daily.index.name = "date"
+        return daily
 
 
 def get_daily_prices_yahoo(
@@ -319,6 +378,7 @@ Subí tu archivo **Movements.csv** de DEGIRO y te muestro un único gráfico con
     positions_df = None
     isin_to_name: Dict[str, str] = {}
     cashflow_df: pd.DataFrame | None = None
+    cash_daily: pd.DataFrame | None = None
     if movements_file is not None:
         try:
             raw_bytes = movements_file.getvalue()
@@ -334,6 +394,12 @@ Subí tu archivo **Movements.csv** de DEGIRO y te muestro un único gráfico con
             cf_loader = DegiroMovementsCsvCashflowLoader()
             cf = cf_loader.load(buf_cf)
             cashflow_df = cf if not cf.empty else None
+
+            # Saldo diario de efectivo (EUR)
+            buf_cash = io.BytesIO(raw_bytes)
+            cash_loader = DegiroMovementsDailyCashLoader()
+            cash_daily_tmp = cash_loader.load_daily_cash(buf_cash)
+            cash_daily = cash_daily_tmp if not cash_daily_tmp.empty else None
         except Exception as e:
             st.error(f"No pude procesar Movements.csv: {e}")
 
@@ -452,17 +518,37 @@ Subí tu archivo **Movements.csv** de DEGIRO y te muestro un único gráfico con
     portfolio_daily = value_by_isin.sum(axis=1).to_frame(name="portfolio_value")
     portfolio_daily.index.name = "date"
 
+    # Añadimos efectivo (EUR) al valor de la cartera si lo tenemos disponible
+    if cash_daily is not None and not cash_daily.empty:
+        cash_series = (
+            cash_daily.reindex(portfolio_daily.index)
+            .ffill()
+            .fillna(0.0)["cash_eur"]
+        )
+    else:
+        cash_series = pd.Series(0.0, index=portfolio_daily.index, name="cash_eur")
+
+    portfolio_daily["cash_eur"] = cash_series
+    portfolio_daily["total_value"] = (
+        portfolio_daily["portfolio_value"] + portfolio_daily["cash_eur"]
+    )
+
     # KPIs básicos del período seleccionado
     def fmt_money(x: float) -> str:
         return "—" if pd.isna(x) else f"{x:,.2f}"
 
-    initial_value = float(portfolio_daily["portfolio_value"].iloc[0])
-    final_value = float(portfolio_daily["portfolio_value"].iloc[-1])
+    # Valor final total (activos + efectivo)
+    final_value = float(portfolio_daily["total_value"].iloc[-1])
     net_cashflows_range = 0.0
+    total_net_contributions = 0.0
 
     # Opcional: cashflows en el eje secundario (si los pudimos detectar)
     daily_cf = None
     if cashflow_df is not None and not cashflow_df.empty:
+        # Aportes/retiros netos en TODO el historial (para la métrica global)
+        total_net_contributions = float(cashflow_df["amount"].sum())
+
+        # Cashflows sólo en el rango seleccionado (para el gráfico de barras)
         cf_window = cashflow_df[
             (cashflow_df["date"].dt.date >= start)
             & (cashflow_df["date"].dt.date <= end)
@@ -473,9 +559,9 @@ Subí tu archivo **Movements.csv** de DEGIRO y te muestro un único gráfico con
             cf_window = cf_window.reindex(portfolio_daily.index, fill_value=0.0)
             daily_cf = cf_window["amount"]
 
-    # Ganancia neta en euros en el rango seleccionado:
-    # valor final menos (valor inicial + aportes/retiros netos en el período)
-    net_euros_gain = final_value - (initial_value + net_cashflows_range)
+    # Ganancia neta en euros:
+    # valor total actual menos el total de aportes netos (depósitos - retiros) en todo el historial
+    net_euros_gain = final_value - total_net_contributions
 
     st.markdown("#### Resumen del período seleccionado")
     col_current, col_net_gain = st.columns(2)
@@ -495,6 +581,19 @@ Subí tu archivo **Movements.csv** de DEGIRO y te muestro un único gráfico con
                 mode="lines",
                 stackgroup="holdings",
                 name=label,
+            ),
+            secondary_y=False,
+        )
+
+    # Efectivo EUR como una capa adicional en el área apilada (si existe)
+    if portfolio_daily["cash_eur"].abs().sum() > 0:
+        fig.add_trace(
+            go.Scatter(
+                x=portfolio_daily.index,
+                y=portfolio_daily["cash_eur"],
+                mode="lines",
+                stackgroup="holdings",
+                name="Efectivo (EUR)",
             ),
             secondary_y=False,
         )
@@ -523,11 +622,26 @@ Subí tu archivo **Movements.csv** de DEGIRO y te muestro un único gráfico con
     melted_prices = prices_aligned.reset_index().melt(
         id_vars="date", var_name="ISIN", value_name="price"
     )
+
+    # Usamos nombres de producto (y ticker, si está disponible) para una leyenda más descriptiva
+    label_map: Dict[str, str] = {}
+    for isin in isins_in_positions:
+        base_name = isin_to_name.get(isin, isin)
+        ticker = isin_to_ticker.get(isin, "")
+        if ticker:
+            label_map[isin] = f"{base_name} ({ticker})"
+        else:
+            label_map[isin] = base_name
+
+    melted_prices["Instrumento"] = melted_prices["ISIN"].map(
+        lambda x: label_map.get(x, x)
+    )
+
     fig_prices = px.line(
         melted_prices,
         x="date",
         y="price",
-        color="ISIN",
+        color="Instrumento",
         title="Evolución del precio por ISIN",
     )
     st.plotly_chart(fig_prices, use_container_width=True)
