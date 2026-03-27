@@ -10,3 +10,5 @@ pdfplumber>=0.11.0
 yfinance>=0.2.50
 requests>=2.31.0
 
+# Install this repo as a package (needed for `from portfolio_evolution...` on Streamlit Cloud, etc.).
+.
