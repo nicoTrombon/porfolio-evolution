@@ -329,6 +329,71 @@ def get_daily_prices_yahoo(
     return data
 
 
+# Yahoo suffix → typical quote currency (when metadata is missing or wrongly says USD).
+_YAHOO_SUFFIX_QUOTE_CCY: Dict[str, str] = {
+    "AS": "EUR",  # Amsterdam
+    "DE": "EUR",
+    "F": "EUR",
+    "PA": "EUR",
+    "BR": "EUR",
+    "MI": "EUR",
+    "MC": "EUR",
+    "VI": "EUR",
+    "HE": "EUR",
+    "LS": "EUR",
+    "SW": "CHF",
+    "L": "GBP",
+    "OL": "NOK",
+    "ST": "SEK",
+    "CO": "DKK",
+    "WA": "PLN",
+}
+
+
+def _infer_quote_ccy_from_yahoo_suffix(symbol: str) -> str:
+    u = str(symbol).strip().upper()
+    if "." not in u:
+        return ""
+    suf = u.rsplit(".", 1)[-1]
+    return _YAHOO_SUFFIX_QUOTE_CCY.get(suf, "")
+
+
+def _yahoo_quote_currencies(tickers: List[str]) -> Dict[str, str]:
+    """
+    Quote currency for the same prices yfinance returns (history / Adj Close).
+
+    Uses get_history_metadata()['currency'] first (aligned with download). If Yahoo
+    reports USD for a European-listed suffix (e.g. .AS), we override using the
+    suffix map. Keys are uppercased symbols for stable lookup.
+    """
+    out: Dict[str, str] = {}
+    for sym in tickers:
+        s = str(sym).strip().upper()
+        if not s or s in out:
+            continue
+        inferred = _infer_quote_ccy_from_yahoo_suffix(s)
+        tk = yf.Ticker(s)
+        ccy = ""
+        try:
+            md = tk.get_history_metadata() or {}
+            ccy = str(md.get("currency") or "").strip().upper()
+        except Exception:
+            pass
+        if inferred and ccy == "USD":
+            ccy = inferred
+        elif not ccy and inferred:
+            ccy = inferred
+        elif not ccy:
+            try:
+                ccy = str((tk.info or {}).get("currency") or "").strip().upper()
+            except Exception:
+                ccy = ""
+            if inferred and ccy == "USD":
+                ccy = inferred
+        out[s] = ccy
+    return out
+
+
 ISIN_MAPPING_PATH = Path("isin_mapping.json")
 
 
@@ -623,13 +688,27 @@ Subí tu archivo **Movements.csv** de DEGIRO y te muestro un único gráfico con
         id_vars="date", var_name="ISIN", value_name="price"
     )
 
-    # Usamos nombres de producto (y ticker, si está disponible) para una leyenda más descriptiva
+    unique_yahoo_tickers = sorted(
+        {
+            str(isin_to_ticker[i]).strip().upper()
+            for i in isins_in_positions
+            if isin_to_ticker.get(i)
+        }
+    )
+    ticker_ccy = _yahoo_quote_currencies(unique_yahoo_tickers)
+
+    # Leyenda: nombre DEGIRO puede incluir "(USD)" (clase/distribución); la divisa del
+    # precio Yahoo va al final entre corchetes para no confundirla con el texto del bróker.
     label_map: Dict[str, str] = {}
     for isin in isins_in_positions:
         base_name = isin_to_name.get(isin, isin)
-        ticker = isin_to_ticker.get(isin, "")
-        if ticker:
-            label_map[isin] = f"{base_name} ({ticker})"
+        ticker_raw = str(isin_to_ticker.get(isin, "")).strip()
+        ticker_key = ticker_raw.upper()
+        ccy = ticker_ccy.get(ticker_key, "") if ticker_key else ""
+        if ticker_raw and ccy:
+            label_map[isin] = f"{base_name} ({ticker_raw}) [{ccy}]"
+        elif ticker_raw:
+            label_map[isin] = f"{base_name} ({ticker_raw})"
         else:
             label_map[isin] = base_name
 
@@ -642,8 +721,9 @@ Subí tu archivo **Movements.csv** de DEGIRO y te muestro un único gráfico con
         x="date",
         y="price",
         color="Instrumento",
-        title="Evolución del precio por ISIN",
+        title="Evolución del precio por ISIN (divisa = cotización Yahoo del ticker)",
     )
+    fig_prices.update_yaxes(title_text="Precio")
     st.plotly_chart(fig_prices, use_container_width=True)
 
 
