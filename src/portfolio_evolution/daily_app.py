@@ -362,6 +362,23 @@ def _yahoo_quote_currencies(tickers: List[str]) -> Dict[str, str]:
     return out
 
 
+def _normalize_price_columns_base_100(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Per column: first non-null price in the frame becomes 100 (price / base * 100).
+    """
+    out = df.copy()
+    for col in out.columns:
+        s = out[col]
+        valid = s.dropna()
+        if valid.empty:
+            continue
+        base = float(valid.iloc[0])
+        if base == 0 or pd.isna(base):
+            continue
+        out[col] = s / base * 100.0
+    return out
+
+
 ISIN_MAPPING_PATH = Path("isin_mapping.json")
 
 
@@ -652,7 +669,18 @@ Subí tu archivo **Movements.csv** de DEGIRO y te muestro un único gráfico con
 
     # Precios diarios por ISIN
     st.markdown("#### Precios diarios por ISIN")
-    melted_prices = prices_aligned.reset_index().melt(
+    normalize_prices_index = st.toggle(
+        "Normalizar series (primer valor del período = 100)",
+        value=False,
+        key="daily_prices_normalize_base_100",
+        help="Cada línea usa su primer precio válido en el rango elegido como base 100.",
+    )
+    prices_for_chart = (
+        _normalize_price_columns_base_100(prices_aligned)
+        if normalize_prices_index
+        else prices_aligned
+    )
+    melted_prices = prices_for_chart.reset_index().melt(
         id_vars="date", var_name="ISIN", value_name="price"
     )
 
@@ -683,14 +711,25 @@ Subí tu archivo **Movements.csv** de DEGIRO y te muestro un único gráfico con
         lambda x: label_map.get(x, x)
     )
 
+    if normalize_prices_index:
+        price_chart_title = (
+            "Evolución del precio por ISIN — índice (primer valor del período = 100)"
+        )
+        price_y_title = "Índice (base 100)"
+    else:
+        price_chart_title = (
+            "Evolución del precio por ISIN (divisa solo si Yahoo la informa; si no: desconocida)"
+        )
+        price_y_title = "Precio"
+
     fig_prices = px.line(
         melted_prices,
         x="date",
         y="price",
         color="Instrumento",
-        title="Evolución del precio por ISIN (divisa solo si Yahoo la informa; si no: desconocida)",
+        title=price_chart_title,
     )
-    fig_prices.update_yaxes(title_text="Precio")
+    fig_prices.update_yaxes(title_text=price_y_title)
     st.plotly_chart(fig_prices, use_container_width=True)
 
 
